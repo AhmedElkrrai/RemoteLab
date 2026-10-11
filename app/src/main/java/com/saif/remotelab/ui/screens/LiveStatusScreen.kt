@@ -1,16 +1,13 @@
 package com.saif.remotelab.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -18,19 +15,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.saif.remotelab.data.InstrumentState
 import com.saif.remotelab.data.InstrumentStatus
 import com.saif.remotelab.ui.components.AppCard
-import com.saif.remotelab.ui.components.EmptyHint
+import com.saif.remotelab.ui.components.EmptyState
+import com.saif.remotelab.ui.components.KindTile
 import com.saif.remotelab.ui.components.SectionTitle
+import com.saif.remotelab.ui.components.StatusSummary
 import com.saif.remotelab.ui.components.ToneBadge
 import com.saif.remotelab.ui.components.details
 import com.saif.remotelab.ui.components.tone
 import com.saif.remotelab.ui.theme.Palette
-import com.saif.remotelab.ui.theme.Tone
 import kotlinx.coroutines.delay
 
 /** Read-only board: what is running, for how long, and what comes next on each instrument. */
@@ -43,51 +40,43 @@ fun LiveStatusScreen(board: List<InstrumentState>, modifier: Modifier = Modifier
         }
     }
     val running = board.filter { it.status == InstrumentStatus.Running }
-    val idle = board.filter { it.status == InstrumentStatus.Idle }
-    val maintenance = board.filter { it.status == InstrumentStatus.Maintenance }
+    val waiting = board.filter { it.status != InstrumentStatus.Running && it.queue.isNotEmpty() }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                CountTile("يعمل", running.size, Tone.Emerald, Modifier.weight(1f))
-                CountTile("متاح", idle.size, Tone.Slate, Modifier.weight(1f))
-                CountTile("صيانة", maintenance.size, Tone.Rose, Modifier.weight(1f))
-            }
-        }
+        item { StatusSummary(board) }
 
-        item { SectionTitle("يعمل الآن") }
+        item { SectionTitle("Running now · ${running.size}") }
         if (running.isEmpty()) {
-            item { EmptyHint("لا توجد أجهزة تعمل الآن.") }
+            item { EmptyState("No instruments are running", "Runs started from the Operation tab appear here.") }
         }
         items(running, key = { it.instrument.id }) { state ->
             val run = state.running ?: return@items
-            AppCard(tone = state.tone()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(state.instrument.id, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            AppCard {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    KindTile(state.instrument.kind, state.tone())
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(state.instrument.id, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Text(run.displayName, color = Palette.TextSoft, style = MaterialTheme.typography.bodyMedium)
+                    }
                     run.startedAt?.let { ToneBadge(elapsedLabel(it, now), state.tone()) }
                 }
-                Text(run.displayName, fontWeight = FontWeight.Medium)
+                HorizontalDivider(color = Palette.Line)
                 Text(run.details(), color = Palette.Muted, style = MaterialTheme.typography.bodySmall)
                 Text(
-                    text = state.queue.firstOrNull()?.let { "التالي: ${it.displayName} · ${it.interval}" }
-                        ?: "لا يوجد تحليل تالٍ في الانتظار",
+                    text = state.queue.firstOrNull()?.let { "Next: ${it.displayName}  ·  ${it.interval}" }
+                        ?: "Nothing queued after this run",
                     color = Palette.TextSoft,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         }
 
-        val waiting = (idle + maintenance).filter { it.queue.isNotEmpty() }
         if (waiting.isNotEmpty()) {
-            item { SectionTitle("تحاليل تنتظر جهازاً متوقفاً") }
+            item { SectionTitle("Queued on a stopped instrument · ${waiting.size}") }
             items(waiting, key = { "waiting-${it.instrument.id}" }) { state ->
                 InstrumentCard(state, onClick = null)
             }
@@ -95,26 +84,12 @@ fun LiveStatusScreen(board: List<InstrumentState>, modifier: Modifier = Modifier
     }
 }
 
-@Composable
-private fun CountTile(label: String, count: Int, tone: Tone, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(Palette.Card)
-            .padding(vertical = 14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(count.toString(), color = tone.fg, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text(label, color = Palette.Muted, style = MaterialTheme.typography.bodySmall)
-    }
-}
-
 private fun elapsedLabel(startedAt: Long, now: Long): String {
     val minutes = ((now - startedAt) / 60_000).coerceAtLeast(0)
     val hours = minutes / 60
     return when {
-        minutes < 1 -> "بدأ الآن"
-        hours < 1 -> "منذ $minutes د"
-        else -> "منذ $hours س ${minutes % 60} د"
+        minutes < 1 -> "Just started"
+        hours < 1 -> "$minutes min"
+        else -> "$hours h ${minutes % 60} min"
     }
 }

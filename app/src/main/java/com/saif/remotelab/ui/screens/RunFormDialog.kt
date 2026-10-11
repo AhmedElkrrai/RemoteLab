@@ -1,32 +1,28 @@
 package com.saif.remotelab.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.saif.remotelab.data.InstrumentState
 import com.saif.remotelab.data.RunDraft
+import com.saif.remotelab.data.RunField
 import com.saif.remotelab.data.StudyCondition
 import com.saif.remotelab.data.TestType
+import com.saif.remotelab.data.toggleInterval
 import com.saif.remotelab.data.validateRun
 import com.saif.remotelab.ui.components.ChipGroup
+import com.saif.remotelab.ui.components.FieldLabel
+import com.saif.remotelab.ui.components.FormScreen
+import com.saif.remotelab.ui.components.FormSection
+import com.saif.remotelab.ui.components.FormTextField
 import com.saif.remotelab.ui.components.label
 import com.saif.remotelab.ui.theme.Palette
 
-/** Product → interval → instrument → test. Starts the run, or queues it when the instrument is busy. */
+/** Starts the run, or queues it when the chosen instrument is busy. */
 @Composable
 fun RunFormDialog(
     initial: RunDraft,
@@ -35,110 +31,90 @@ fun RunFormDialog(
     onSubmit: (RunDraft) -> Unit
 ) {
     var draft by remember { mutableStateOf(initial) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // Problems stay hidden until the first submit attempt, then update as the analyst fixes them.
+    var attempted by remember { mutableStateOf(false) }
+    val problems = if (attempted) validateRun(draft, board) else emptyMap()
     val target = board.firstOrNull { it.instrument.id == draft.instrumentId }
 
-    fun edit(next: RunDraft) {
-        draft = next
-        error = null
-    }
+    FormScreen(
+        title = "New run",
+        submitLabel = if (target == null || target.isFree) "Start run" else "Add to queue",
+        problems = problems.map { (field, message) ->
+            if (field == RunField.Duplicate) message else "${field.label}: $message"
+        },
+        onDismiss = onDismiss,
+        onSubmit = {
+            attempted = true
+            if (validateRun(draft, board).isEmpty()) onSubmit(draft)
+        }
+    ) {
+        FormSection("Product") {
+            FormTextField(draft.productName, { draft = draft.copy(productName = it) }, "Product name", problems[RunField.Product])
+            FormTextField(draft.concentration, { draft = draft.copy(concentration = it) }, "Concentration", problems[RunField.Concentration])
+            FormTextField(draft.batchNo, { draft = draft.copy(batchNo = it) }, "Batch No", problems[RunField.Batch])
+        }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("تشغيل جديد") },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedTextField(
-                    value = draft.productName,
-                    onValueChange = { edit(draft.copy(productName = it)) },
-                    label = { Text("المستحضر") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = draft.concentration,
-                    onValueChange = { edit(draft.copy(concentration = it)) },
-                    label = { Text("التركيز") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = draft.batchNo,
-                    onValueChange = { edit(draft.copy(batchNo = it)) },
-                    label = { Text("Batch No") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                FieldLabel("نوع الدراسة")
+        FormSection("Study") {
+            FieldLabel("Study type")
+            ChipGroup(
+                items = StudyCondition.entries,
+                isSelected = { it == draft.condition },
+                label = { it.label },
+                onClick = { draft = draft.copy(condition = it, months = draft.months.filter { m -> m in it.months }.toSet()) }
+            )
+            if (draft.condition.hasIntervals) {
+                FieldLabel("Time interval", problems[RunField.Interval])
                 ChipGroup(
-                    items = StudyCondition.entries,
-                    isSelected = { it == draft.condition },
+                    items = draft.condition.months,
+                    isSelected = { it in draft.months },
+                    label = { "${it}M" },
+                    onClick = { draft = draft.copy(months = toggleInterval(draft.months, it)) }
+                )
+                Text(
+                    "Pick one interval. 3M and 6M can be run together.",
+                    color = Palette.Muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        FormSection("Instrument") {
+            FieldLabel("Instrument", problems[RunField.Instrument])
+            ChipGroup(
+                items = board,
+                isSelected = { it.instrument.id == draft.instrumentId },
+                label = { "${it.instrument.id} · ${it.status.label()}" },
+                onClick = { picked ->
+                    // Tests belong to an instrument kind, so drop the ones the new instrument cannot run.
+                    draft = draft.copy(
+                        instrumentId = picked.instrument.id,
+                        tests = draft.tests.filter { it.kind == picked.instrument.kind }.toSet()
+                    )
+                }
+            )
+            if (target != null && !target.isFree) {
+                Text(
+                    "${target.instrument.id} is busy, so this run will wait in its queue.",
+                    color = Palette.Muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            FieldLabel("Test type", problems[RunField.Tests])
+            if (target == null) {
+                Text(
+                    "Select an instrument to see the tests it can run.",
+                    color = Palette.Muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            } else {
+                ChipGroup(
+                    items = TestType.entries.filter { it.kind == target.instrument.kind },
+                    isSelected = { it in draft.tests },
                     label = { it.label },
-                    onClick = { edit(draft.copy(condition = it, months = draft.months.takeIf { m -> m in it.months })) }
+                    onClick = { draft = draft.copy(tests = if (it in draft.tests) draft.tests - it else draft.tests + it) }
                 )
-                if (draft.condition.hasIntervals) {
-                    FieldLabel("الفترة الزمنية")
-                    ChipGroup(
-                        items = draft.condition.months,
-                        isSelected = { it == draft.months },
-                        label = { "${it}M" },
-                        onClick = { edit(draft.copy(months = it)) }
-                    )
-                }
-
-                FieldLabel("الجهاز")
-                ChipGroup(
-                    items = board,
-                    isSelected = { it.instrument.id == draft.instrumentId },
-                    label = { "${it.instrument.id} · ${it.status.label()}" },
-                    onClick = { picked ->
-                        // Tests belong to an instrument kind, so drop the ones the new instrument cannot run.
-                        edit(
-                            draft.copy(
-                                instrumentId = picked.instrument.id,
-                                tests = draft.tests.filter { it.kind == picked.instrument.kind }.toSet()
-                            )
-                        )
-                    }
-                )
-
-                if (target != null) {
-                    FieldLabel("نوع التحليل")
-                    ChipGroup(
-                        items = TestType.entries.filter { it.kind == target.instrument.kind },
-                        isSelected = { it in draft.tests },
-                        label = { it.label },
-                        onClick = { edit(draft.copy(tests = if (it in draft.tests) draft.tests - it else draft.tests + it)) }
-                    )
-                    if (!target.isFree) {
-                        Text(
-                            "الجهاز مشغول، سيُضاف التحليل إلى قائمة الانتظار.",
-                            color = Palette.Muted,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                error = validateRun(draft, board)
-                if (error == null) onSubmit(draft)
-            }) {
-                Text(if (target == null || target.isFree) "ابدأ التشغيل" else "أضف للانتظار")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
-    )
-}
-
-@Composable
-internal fun FieldLabel(text: String) {
-    Text(text, color = Palette.TextSoft, style = MaterialTheme.typography.labelLarge)
+        }
+    }
 }

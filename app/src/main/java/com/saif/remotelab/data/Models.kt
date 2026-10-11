@@ -21,16 +21,20 @@ enum class TestType(val label: String, val kind: InstrumentKind) {
 
 /** [months] is the standard pull schedule; empty for studies that have no time intervals. */
 enum class StudyCondition(val label: String, val short: String, val months: List<Int>) {
-    Accelerated("Accelerated", "Acc", listOf(0, 3, 6)),
-    LongTerm("Long Term", "Long", listOf(0, 3, 6, 12, 18, 24, 36)),
+    Accelerated("Accelerated", "Acc", listOf(0, 1, 3, 6)),
+    LongTerm("Long Term", "Long", listOf(0, 3, 6, 9, 12, 18, 24, 36)),
     Validation("Validation", "Validation", emptyList()),
     Verification("Verification", "Verification", emptyList());
 
     val hasIntervals: Boolean get() = months.isNotEmpty()
 }
 
-fun intervalLabel(condition: StudyCondition, months: Int?): String =
-    if (condition.hasIntervals && months != null) "${months}M ${condition.short}" else condition.label
+fun intervalLabel(condition: StudyCondition, months: Collection<Int>): String =
+    if (condition.hasIntervals && months.isNotEmpty()) {
+        "${months.sorted().joinToString(" + ") { "${it}M" }} ${condition.short}"
+    } else {
+        condition.label
+    }
 
 enum class RunState { Running, Queued, Finished }
 
@@ -45,7 +49,10 @@ data class Instrument(
     val note: String = ""
 )
 
-/** One table covers the current run, the queue and the history of an instrument. */
+/**
+ * One table covers the current run, the queue and the history of an instrument.
+ * [months] holds one interval, or 3 and 6 together (see [isValidIntervalSelection]).
+ */
 @Entity(tableName = "runs", indices = [Index("instrumentId")])
 data class Run(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -54,7 +61,7 @@ data class Run(
     val concentration: String,
     val batchNo: String,
     val condition: StudyCondition,
-    val months: Int?,
+    val months: Set<Int>,
     val tests: Set<TestType>,
     val state: RunState,
     val createdAt: Long,
@@ -65,7 +72,10 @@ data class Run(
     val displayName: String get() = listOf(productName, concentration).filter { it.isNotBlank() }.joinToString(" ")
 }
 
-/** One line of a monthly stability plan. The archive is the collection of all of them. */
+/**
+ * One line of a monthly stability plan. The archive is the collection of all of them.
+ * [condition] and [test] are null when a PDF import could not find them in the line.
+ */
 @Entity(tableName = "plan_records", indices = [Index("productName"), Index("monthPlan")])
 data class PlanRecord(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -73,12 +83,13 @@ data class PlanRecord(
     val concentration: String,
     val batchNo: String,
     val dateOfAnalysis: LocalDate,
-    val condition: StudyCondition,
+    val condition: StudyCondition?,
     val months: Int?,
-    val test: TestType,
+    val test: TestType?,
     val monthPlan: YearMonth
 ) {
-    val interval: String get() = intervalLabel(condition, months)
+    val interval: String get() = condition?.let { intervalLabel(it, listOfNotNull(months)) } ?: "Interval not set"
+    val testLabel: String get() = test?.label ?: "Test not set"
     val displayName: String get() = listOf(productName, concentration).filter { it.isNotBlank() }.joinToString(" ")
 }
 
@@ -105,7 +116,7 @@ data class RunDraft(
     val concentration: String = "",
     val batchNo: String = "",
     val condition: StudyCondition = StudyCondition.Accelerated,
-    val months: Int? = null,
+    val months: Set<Int> = emptySet(),
     val tests: Set<TestType> = emptySet()
 )
 
@@ -113,9 +124,9 @@ fun PlanRecord.toDraft() = RunDraft(
     productName = productName,
     concentration = concentration,
     batchNo = batchNo,
-    condition = condition,
-    months = months,
-    tests = setOf(test)
+    condition = condition ?: StudyCondition.Accelerated,
+    months = if (condition != null) setOfNotNull(months) else emptySet(),
+    tests = setOfNotNull(test)
 )
 
 val DefaultInstruments: List<Instrument> = listOf(
