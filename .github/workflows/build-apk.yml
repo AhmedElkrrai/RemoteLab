@@ -1,0 +1,49 @@
+name: Build APK
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The version is derived from the run number, so every build bumps it without a commit:
+      # run 1 -> 0.0.1, run 99 -> 0.0.99, run 100 -> 0.1.0, run 10000 -> 1.0.0.
+      - name: Compute version
+        id: version
+        run: |
+          n=${{ github.run_number }}
+          name="$(( n / 10000 )).$(( n / 100 % 100 )).$(( n % 100 ))"
+          echo "code=$n" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Building version $name (code $n)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test and build
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest assembleDebug \
+            -PappVersionCode=${{ steps.version.outputs.code }} \
+            -PappVersionName=${{ steps.version.outputs.name }}
+
+      - name: Name the APK after its version
+        run: mv app/build/outputs/apk/debug/app-debug.apk "thabat-planner-${{ steps.version.outputs.name }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: thabat-planner-${{ steps.version.outputs.name }}
+          path: thabat-planner-${{ steps.version.outputs.name }}.apk
+          if-no-files-found: error
